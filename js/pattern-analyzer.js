@@ -13,23 +13,27 @@ import {
     calculateZScore,
 } from './statistics.js';
 import { getSingleNumberProbability } from './probability.js';
+import {
+    EVIDENCE_LEVELS,
+    classifyByZScore as sharedClassifyByZScore,
+    buildHotNumberInsight,
+    buildColdNumberInsight,
+    sampleSizeWarning,
+    MULTIPLE_TESTING_NOTE,
+} from './insight-engine.js';
 
+// Re-exported under the original key names (OBSERVATION/WEAK_EVIDENCE/...)
+// for backward compatibility with existing callers, but backed by the
+// single shared vocabulary in insight-engine.js (advanced spec §8: avoid
+// duplicating the same classification logic per feature).
 export const CLASSIFICATIONS = Object.freeze({
-    OBSERVATION: 'Observation',
-    WEAK_EVIDENCE: 'Weak evidence',
-    MODERATE_DEVIATION: 'Moderate deviation',
-    POTENTIALLY_UNUSUAL: 'Potentially unusual',
+    OBSERVATION: EVIDENCE_LEVELS.NONE,
+    WEAK_EVIDENCE: EVIDENCE_LEVELS.WEAK,
+    MODERATE_DEVIATION: EVIDENCE_LEVELS.MODERATE,
+    POTENTIALLY_UNUSUAL: EVIDENCE_LEVELS.STRONG,
 });
 
-/** Classifies a deviation by |z| magnitude — descriptive labels only, never "predictive". */
-function classifyByZScore(z) {
-    if (z === null) return CLASSIFICATIONS.OBSERVATION;
-    const abs = Math.abs(z);
-    if (abs < 1) return CLASSIFICATIONS.OBSERVATION;
-    if (abs < 2) return CLASSIFICATIONS.WEAK_EVIDENCE;
-    if (abs < 3) return CLASSIFICATIONS.MODERATE_DEVIATION;
-    return CLASSIFICATIONS.POTENTIALLY_UNUSUAL;
-}
+const classifyByZScore = sharedClassifyByZScore;
 
 function hotAndColdNumbers(results, rouletteType, topN = 5) {
     const freq = calculateNumberFrequency(results, rouletteType);
@@ -133,7 +137,39 @@ export function buildPatternNarratives(findings) {
     lines.push(`The current sample contains ${findings.sampleSize} round${findings.sampleSize === 1 ? '' : 's'}.`);
     lines.push('The observed distribution may differ from the theoretical distribution, but this does not establish that the wheel is biased.');
 
+    const warning = sampleSizeWarning(findings.sampleSize);
+    if (warning) lines.push(warning);
+    lines.push(MULTIPLE_TESTING_NOTE);
+
     return lines;
+}
+
+/**
+ * Structured Observation/Evidence/Interpretation/Limitation insights
+ * (advanced spec §33) for the single hottest and coldest numbers in the
+ * sample — used by the Statistical Report and can be rendered directly in
+ * the UI as a four-line card instead of a single narrative sentence.
+ */
+export function buildStructuredInsights(findings, rouletteType) {
+    const insights = [];
+    const total = findings.sampleSize;
+    if (findings.hotNumbers.length && findings.hotNumbers[0].occurrences > 0) {
+        const top = findings.hotNumbers[0];
+        insights.push(buildHotNumberInsight({
+            result: top.result,
+            occurrences: top.occurrences,
+            expectedOccurrences: getSingleNumberProbability(rouletteType) * total,
+            sampleSize: total,
+        }));
+    }
+    if (findings.coldNumbers.length) {
+        const bottom = findings.coldNumbers[0];
+        insights.push(buildColdNumberInsight({
+            result: bottom.result,
+            roundsSinceLastOccurrence: bottom.roundsSinceLastOccurrence,
+        }));
+    }
+    return insights;
 }
 
 function capitalize(s) {

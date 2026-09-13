@@ -39,9 +39,15 @@ import { analyzePatterns, buildPatternNarratives, CLASSIFICATIONS } from './patt
 import { runSimulation, runMultiBetComparison, evaluateBet } from './simulation.js';
 import { createHistory, filterRounds, sortRounds, paginate } from './history.js';
 import { loadSettings, saveSettings, loadBankroll, saveBankroll, loadHistory, saveHistory, clearAll } from './storage.js';
-import { buildCsv, parseCsv, triggerCsvDownload, readFileAsText } from './export.js';
+import { buildCsv, parseCsv, triggerCsvDownload, triggerTextDownload, readFileAsText } from './export.js';
 import { renderBarChart, renderLineChart, renderDoughnutChart, PALETTE } from './charts.js';
 import { createRouletteWheel } from './roulette-animation.js';
+import { analyzeWheelBias } from './bias-analyzer.js';
+import { runPatternDetectorValidation } from './pattern-validation.js';
+import { calculateExpectedValue } from './probability.js';
+import { runSystemValidation } from './self-test.js';
+import { buildStatisticalReport, buildReportCsv, buildReportJson, buildReportHtml } from './statistical-report.js';
+import { runHeavyJob } from './worker-client.js';
 
 const $ = (id) => document.getElementById(id);
 
@@ -75,6 +81,11 @@ const EXPECTED_STD_DEV = Math.sqrt((37 * 37 - 1) / 12);
 function formatCurrency(value) {
     const n = Number.isFinite(value) ? value : 0;
     return `R$ ${n.toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`;
+}
+
+/** Locale-independent thousands-grouped integer (always en-US style, like formatCurrency — never inherits the browser's locale). */
+function formatInt(value) {
+    return Number(value).toLocaleString('en-US');
 }
 
 function formatPct(value, digits = 2) {
@@ -115,16 +126,19 @@ const state = {
     bankroll: 0,
     history: null,
     bet: { type: null, selection: null },
+    autoSpin: { active: false, remaining: 0, timer: null },
     analyzerTab: 'history',
     analysisWindow: 100,
     historyFilters: {},
     historySort: { field: 'round', direction: 'desc' },
     historyPage: 1,
     simTab: 'single',
+    labTab: 'samples',
     explorerSample: null,
     compareSamples: null,
     wheel: null,
     spinning: false,
+    currentReport: null,
 };
 
 state.bankroll = loadBankroll(state.settings.startingBankroll);
@@ -145,6 +159,7 @@ function showPage(pageName) {
     if (pageName === 'history') renderHistoryTable();
     if (pageName === 'analyzer') renderAnalyzerTab(state.analyzerTab);
     if (pageName === 'simulation') renderSimTab(state.simTab);
+    if (pageName === 'lab') renderLabTab(state.labTab);
 }
 
 document.querySelectorAll('.app-nav__button[data-page]').forEach((btn) => {
@@ -173,16 +188,34 @@ document.querySelectorAll('[data-sim-tab]').forEach((btn) => {
     });
 });
 
+document.querySelectorAll('[data-lab-tab]').forEach((btn) => {
+    btn.addEventListener('click', () => {
+        state.labTab = btn.dataset.labTab;
+        document.querySelectorAll('[data-lab-tab]').forEach((b) => {
+            if (b === btn) b.setAttribute('aria-current', 'page');
+            else b.removeAttribute('aria-current');
+        });
+        renderLabTab(state.labTab);
+    });
+});
+
 function renderAnalyzerTab(tab) {
-    ['history', 'explorer', 'compare'].forEach((name) => {
+    ['history', 'explorer', 'compare', 'bias', 'report'].forEach((name) => {
         $(`analyzer-tab-${name}`).hidden = name !== tab;
     });
     if (tab === 'history') renderAnalyzerHistory();
+    if (tab === 'bias') renderBiasAnalyzer();
 }
 
 function renderSimTab(tab) {
     $('sim-tab-single').hidden = tab !== 'single';
     $('sim-tab-multi').hidden = tab !== 'multi';
+    $('sim-tab-montecarlo').hidden = tab !== 'montecarlo';
+}
+
+function renderLabTab(tab) {
+    $('lab-tab-samples').hidden = tab !== 'samples';
+    $('lab-tab-validation').hidden = tab !== 'validation';
 }
 
 // ---------------------------------------------------------------------------
@@ -202,6 +235,10 @@ function setSettingsMessage(message, isError = false) {
 }
 
 $('btn-apply-settings').addEventListener('click', () => {
+    if (state.spinning) {
+        setSettingsMessage('Please wait for the current spin to finish before changing settings.', true);
+        return;
+    }
     const newRouletteType = $('setting-roulette-type').value;
     const newStartingBankroll = Number($('setting-bankroll').value);
     const newBetAmount = Number($('setting-bet-amount').value);
@@ -237,6 +274,7 @@ $('btn-apply-settings').addEventListener('click', () => {
         state.wheel.setRouletteType(newRouletteType);
         populateStraightNumberSelect();
         populateSimNumberSelect();
+        populateMonteCarloNumberSelect();
         buildMultiBetList();
         clearBet();
     }
@@ -274,6 +312,7 @@ function populateBetTypeGrid() {
 }
 
 function selectBetType(betType) {
+    if (state.spinning) return;
     state.bet.type = betType;
     state.bet.selection = betType === BET_TYPES.STRAIGHT ? ($('straight-number').value || '0') : null;
     document.querySelectorAll('#bet-type-grid .bet-type-btn').forEach((btn) => {
@@ -284,6 +323,7 @@ function selectBetType(betType) {
 }
 
 function clearBet() {
+    if (state.spinning) return;
     state.bet = { type: null, selection: null };
     document.querySelectorAll('#bet-type-grid .bet-type-btn').forEach((btn) => btn.setAttribute('aria-pressed', 'false'));
     $('straight-number-row').hidden = true;
@@ -300,6 +340,7 @@ function populateStraightNumberSelect() {
 }
 
 $('straight-number').addEventListener('change', () => {
+    if (state.spinning) return;
     if (state.bet.type === BET_TYPES.STRAIGHT) state.bet.selection = $('straight-number').value;
 });
 
@@ -344,44 +385,145 @@ function renderRecentResults() {
         .join('');
 }
 
-$('btn-spin').addEventListener('click', () => {
-    if (state.spinning) return;
+/**
+ * Runs one spin end-to-end (validation -> generate -> lock controls ->
+ * animate -> record). Shared by the manual Spin button and the Auto Spin
+ * loop so there is exactly one place that implements the generate-before-
+ * animate invariant and the mid-animation lock (spec §10/§60/§62/§80).
+ * @param {() => void} onDone called once the spin's animation completes and
+ *   the round has been recorded — the caller decides whether to unlock
+ *   controls immediately (a single manual spin) or chain another spin
+ *   (Auto Spin).
+ * @returns {boolean} true if the spin actually started, false if a
+ *   validation check (missing straight-number selection, insufficient
+ *   bankroll) rejected it — in which case `onDone` is never called and
+ *   `bet-message` already explains why.
+ */
+function startSpin(onDone) {
+    if (state.spinning) return false;
 
     if (state.bet.type === BET_TYPES.STRAIGHT && !state.bet.selection) {
         $('bet-message').textContent = 'Select a number for your straight bet.';
-        return;
+        return false;
     }
     if (state.bet.type && state.settings.betAmount > state.bankroll) {
         $('bet-message').textContent = 'Bet amount exceeds available bankroll.';
-        return;
+        return false;
     }
 
+    // Snapshot the roulette type and bet along with the result so that any
+    // settings/bet change the user makes while the animation plays cannot
+    // retroactively alter how this already-decided spin gets recorded or
+    // resolved (spec §10/§60/§62/§80 — no inconsistent state mid-animation).
+    const activeBet = { type: state.bet.type, selection: state.bet.selection, amount: state.settings.betAmount };
+
     state.spinning = true;
-    $('btn-spin').disabled = true;
+    setSpinLockedControlsDisabled(true);
     $('bet-message').textContent = '';
 
     const result = generateRandomResult(state.settings.rouletteType);
 
     state.wheel.spinToResult(result, () => {
-        completeSpin(result);
+        completeSpin(result, activeBet);
         state.spinning = false;
-        $('btn-spin').disabled = false;
+        onDone();
     });
+    return true;
+}
+
+$('btn-spin').addEventListener('click', () => {
+    startSpin(() => setSpinLockedControlsDisabled(false));
 });
 
-function completeSpin(result) {
+function setSpinLockedControlsDisabled(disabled) {
+    $('btn-spin').disabled = disabled;
+    $('btn-apply-settings').disabled = disabled;
+    $('btn-clear-bet').disabled = disabled;
+    $('straight-number').disabled = disabled;
+    $('auto-spin-count').disabled = disabled;
+    document.querySelectorAll('#bet-type-grid .bet-type-btn').forEach((btn) => { btn.disabled = disabled; });
+}
+
+// ---------------------------------------------------------------------------
+// Auto Spin
+// ---------------------------------------------------------------------------
+
+const AUTO_SPIN_DELAY_MS = 600;
+
+function stopAutoSpin(statusMessage) {
+    if (state.autoSpin.timer !== null) {
+        window.clearTimeout(state.autoSpin.timer);
+        state.autoSpin.timer = null;
+    }
+    state.autoSpin.active = false;
+    $('btn-auto-spin').textContent = 'Auto Spin';
+    $('btn-auto-spin').setAttribute('aria-pressed', 'false');
+    $('auto-spin-status').textContent = statusMessage ?? '';
+    // A spin already in flight (state.spinning) must still finish and
+    // unlock controls itself; only unlock immediately if nothing is running.
+    if (!state.spinning) setSpinLockedControlsDisabled(false);
+}
+
+function runNextAutoSpin() {
+    if (!state.autoSpin.active) return;
+    if (state.autoSpin.remaining <= 0) {
+        stopAutoSpin('Auto spin finished.');
+        return;
+    }
+
+    $('auto-spin-status').textContent = Number.isFinite(state.autoSpin.remaining)
+        ? `Auto spin: ${state.autoSpin.remaining} spin(s) remaining…`
+        : 'Auto spin running — click Stop Auto Spin to end.';
+
+    const started = startSpin(() => {
+        if (!state.autoSpin.active) {
+            // Stopped while this spin was still animating: stopAutoSpin()
+            // deliberately left controls locked for *this* spin to finish
+            // and unlock them itself, since state.spinning was still true
+            // at the moment Stop was clicked.
+            setSpinLockedControlsDisabled(false);
+            return;
+        }
+        state.autoSpin.remaining -= 1;
+        state.autoSpin.timer = window.setTimeout(runNextAutoSpin, AUTO_SPIN_DELAY_MS);
+    });
+
+    // startSpin() already set an explanatory bet-message (missing straight
+    // number, insufficient bankroll) when it returns false.
+    if (!started) stopAutoSpin();
+}
+
+$('btn-auto-spin').addEventListener('click', () => {
+    if (state.autoSpin.active) {
+        stopAutoSpin('Auto spin stopped.');
+        return;
+    }
+    if (state.spinning) {
+        $('auto-spin-status').textContent = 'Please wait for the current spin to finish.';
+        return;
+    }
+
+    const rawCount = $('auto-spin-count').value;
+    state.autoSpin.active = true;
+    state.autoSpin.remaining = rawCount === 'infinite' ? Infinity : Number(rawCount);
+    $('btn-auto-spin').textContent = 'Stop Auto Spin';
+    $('btn-auto-spin').setAttribute('aria-pressed', 'true');
+    runNextAutoSpin();
+});
+
+function completeSpin(result, bet) {
     const roundNumber = state.history.size() + 1;
     let betInfo = {};
 
-    if (state.bet.type) {
-        const betAmount = state.settings.betAmount;
-        const payout = getBetPayout(state.bet.type);
-        const won = evaluateBet(result, state.bet.type, state.bet.selection);
+    if (bet.type) {
+        const betAmount = bet.amount;
+        const payout = getBetPayout(bet.type);
+        const won = evaluateBet(result, bet.type, bet.selection);
         const profit = won ? betAmount * payout : -betAmount;
         state.bankroll += profit;
         betInfo = {
-            betType: state.bet.type,
-            betSelection: state.bet.selection ?? null,
+            betType: bet.type,
+            betSelection: bet.selection ?? null,
             betAmount,
             won,
             profit,
@@ -978,6 +1120,356 @@ $('btn-run-multi').addEventListener('click', () => {
 });
 
 // ---------------------------------------------------------------------------
+// Progress bar helper (Statistical Lab / Monte Carlo Lab — worker-backed jobs)
+// ---------------------------------------------------------------------------
+
+function setProgress(prefix, done, total, label) {
+    const bar = $(`${prefix}-progress-bar`);
+    const fill = $(`${prefix}-progress-fill`);
+    const labelEl = $(`${prefix}-progress-label`);
+    if (done >= total) {
+        bar.hidden = true;
+        labelEl.textContent = '';
+        return;
+    }
+    bar.hidden = false;
+    fill.style.width = `${Math.min(100, (done / total) * 100)}%`;
+    labelEl.textContent = label ?? `${done} / ${total}`;
+}
+
+// ---------------------------------------------------------------------------
+// Analyzer — Wheel Bias Analyzer tab
+// ---------------------------------------------------------------------------
+
+function renderBiasAnalyzer() {
+    const results = getAnalysisResults();
+    const rouletteType = state.settings.rouletteType;
+    $('bias-sample-size-label').textContent = `Using the current analysis window: ${results.length} round(s).`;
+
+    if (results.length === 0) {
+        $('bias-results').hidden = true;
+        return;
+    }
+    $('bias-results').hidden = false;
+
+    const report = analyzeWheelBias(results, rouletteType);
+
+    $('bias-warning-card').hidden = !report.sampleSizeWarning;
+    if (report.sampleSizeWarning) $('bias-sample-warning').textContent = report.sampleSizeWarning;
+
+    const chiSquareCards = (block) => `
+        <div class="card"><div class="card__title">Chi-square</div><div class="card__value">${block.chiSquare !== null ? block.chiSquare.toFixed(3) : '—'}</div></div>
+        <div class="card"><div class="card__title">Degrees of freedom</div><div class="card__value">${block.degreesOfFreedom}</div></div>
+        <div class="card"><div class="card__title">p-value</div><div class="card__value">${block.pValue !== null ? block.pValue.toFixed(4) : '—'}</div></div>
+        <div class="card"><div class="card__title">Evidence level</div><div class="card__value" style="font-size:1rem">${block.evidenceLevel}</div></div>
+    `;
+
+    $('bias-number-chisquare-cards').innerHTML = chiSquareCards(report.numberChiSquare);
+    $('bias-number-interpretation').textContent = [report.numberChiSquare.pValueInterpretation, report.numberChiSquare.biasInterpretation].filter(Boolean).join(' ');
+
+    $('bias-color-chisquare-cards').innerHTML = chiSquareCards(report.colorChiSquare);
+    $('bias-color-interpretation').textContent = [report.colorChiSquare.pValueInterpretation, report.colorChiSquare.biasInterpretation].filter(Boolean).join(' ');
+
+    const ciCard = (title, data) => !data ? '' : `
+        <div class="card">
+            <div class="card__title">${title}</div>
+            <div class="card__value" style="font-size:1rem">${formatPct(data.observed * 100)}</div>
+            <div class="text-muted" style="font-size:0.78rem">95% CI: ${formatPct(data.lower * 100)} – ${formatPct(data.upper * 100)}</div>
+        </div>`;
+    $('bias-ci-cards').innerHTML =
+        ciCard('Red proportion', report.confidenceIntervals.red) +
+        ciCard('Black proportion', report.confidenceIntervals.black) +
+        (report.confidenceIntervals.mostDeviatedNumber ? ciCard(`Number ${report.confidenceIntervals.mostDeviatedNumber.result} proportion`, report.confidenceIntervals.mostDeviatedNumber) : '');
+
+    $('bias-residuals-table-body').innerHTML = report.numberResiduals.slice(0, 15).map((r) => `
+        <tr>
+            <td>${r.result}</td>
+            <td>${r.occurrences}</td>
+            <td>${formatPct(r.observedPct)}</td>
+            <td>${formatPct(r.expectedPct)}</td>
+            <td>${r.standardizedResidual !== null ? r.standardizedResidual.toFixed(2) : '—'}</td>
+        </tr>
+    `).join('');
+
+    $('bias-significance-caveat').textContent = report.significanceCaveat;
+}
+
+// ---------------------------------------------------------------------------
+// Analyzer — Statistical Report tab
+// ---------------------------------------------------------------------------
+
+$('btn-generate-report').addEventListener('click', () => {
+    const results = getAnalysisResults();
+    if (results.length === 0) {
+        $('report-message').textContent = 'No rounds available yet. Spin the wheel or import history to generate a report.';
+        $('report-preview-card').hidden = true;
+        state.currentReport = null;
+        return;
+    }
+    state.currentReport = buildStatisticalReport(results, state.settings.rouletteType);
+    $('report-message').textContent = `Report generated for ${results.length} round(s).`;
+    $('report-preview-card').hidden = false;
+    $('report-preview').innerHTML = state.currentReport.narratives.map((line) => `<p>${line}</p>`).join('');
+});
+
+$('btn-export-report-csv').addEventListener('click', () => {
+    if (!state.currentReport) return;
+    triggerTextDownload(buildReportCsv(state.currentReport), `roulette-statistical-report-${Date.now()}.csv`, 'text/csv');
+});
+$('btn-export-report-json').addEventListener('click', () => {
+    if (!state.currentReport) return;
+    triggerTextDownload(buildReportJson(state.currentReport), `roulette-statistical-report-${Date.now()}.json`, 'application/json');
+});
+$('btn-export-report-html').addEventListener('click', () => {
+    if (!state.currentReport) return;
+    triggerTextDownload(buildReportHtml(state.currentReport), `roulette-statistical-report-${Date.now()}.html`, 'text/html');
+});
+
+// ---------------------------------------------------------------------------
+// Simulation — Monte Carlo Lab tab
+// ---------------------------------------------------------------------------
+
+function populateMonteCarloBetTypeSelect() {
+    const select = $('mc-bet-type');
+    select.innerHTML = BET_TYPE_ORDER.map((t) => `<option value="${t}">${BET_TYPE_LABELS[t]}</option>`).join('');
+    select.addEventListener('change', () => {
+        $('mc-number-row').hidden = select.value !== BET_TYPES.STRAIGHT;
+    });
+}
+
+function populateMonteCarloNumberSelect() {
+    $('mc-number').innerHTML = getPockets(state.settings.rouletteType).map((p) => `<option value="${p}">${p}</option>`).join('');
+}
+
+function buildMonteCarloCompareList() {
+    const container = $('mc-compare-bet-list');
+    container.innerHTML = BET_TYPE_ORDER.map((t) => `
+        <label class="multi-bet-row">
+            <input type="checkbox" value="${t}" ${[BET_TYPES.RED, BET_TYPES.BLACK, BET_TYPES.STRAIGHT, BET_TYPES.DOZEN_1].includes(t) ? 'checked' : ''} />
+            <span>${BET_TYPE_LABELS[t]}${t === BET_TYPES.STRAIGHT ? ' (17)' : ''}</span>
+        </label>
+    `).join('');
+}
+
+function renderMonteCarloResult(result) {
+    $('mc-results').hidden = false;
+    const s = result.summary;
+    $('mc-summary-cards').innerHTML = `
+        <div class="card"><div class="card__title">Mean final bankroll</div><div class="card__value">${formatCurrency(s.mean)}</div></div>
+        <div class="card"><div class="card__title">Median final bankroll</div><div class="card__value">${formatCurrency(s.median)}</div></div>
+        <div class="card"><div class="card__title">Min</div><div class="card__value">${formatCurrency(s.min)}</div></div>
+        <div class="card"><div class="card__title">Max</div><div class="card__value">${formatCurrency(s.max)}</div></div>
+        <div class="card"><div class="card__title">Std. deviation</div><div class="card__value">${formatCurrency(s.standardDeviation ?? 0)}</div></div>
+    `;
+    const p = s.percentiles;
+    $('mc-percentile-cards').innerHTML = `
+        <div class="card"><div class="card__title">5th percentile</div><div class="card__value">${formatCurrency(p.p5)}</div></div>
+        <div class="card"><div class="card__title">25th percentile</div><div class="card__value">${formatCurrency(p.p25)}</div></div>
+        <div class="card"><div class="card__title">50th percentile</div><div class="card__value">${formatCurrency(p.p50)}</div></div>
+        <div class="card"><div class="card__title">75th percentile</div><div class="card__value">${formatCurrency(p.p75)}</div></div>
+        <div class="card"><div class="card__title">95th percentile</div><div class="card__value">${formatCurrency(p.p95)}</div></div>
+    `;
+    const r = result.riskMetrics;
+    $('mc-risk-cards').innerHTML = `
+        <div class="card"><div class="card__title">P(below starting bankroll)</div><div class="card__value">${formatPct(r.probabilityBelowStart * 100)}</div></div>
+        <div class="card"><div class="card__title">P(profit)</div><div class="card__value">${formatPct(r.probabilityOfProfit * 100)}</div></div>
+        <div class="card"><div class="card__title">P(bankroll depleted)</div><div class="card__value">${formatPct(r.probabilityOfDepletion * 100)}</div></div>
+        <div class="card"><div class="card__title">Avg. max drawdown</div><div class="card__value">${formatCurrency(r.maxDrawdown.mean)}</div></div>
+        <div class="card"><div class="card__title">Worst-case max drawdown</div><div class="card__value">${formatCurrency(r.maxDrawdown.max)}</div></div>
+    `;
+    $('mc-ev-comparison').textContent = `Theoretical expected value: ${formatPct(result.roi.theoreticalEvPct)} per unit staked. Observed across this Monte Carlo run: ${formatPct(result.roi.overallPct)}. These should converge as the number of simulations grows — one run of any size is still a single sample from a random process.`;
+
+    renderBarChart('chart-mc-histogram', {
+        labels: result.histogram.buckets.map((b) => formatCurrency((b.rangeStart + b.rangeEnd) / 2)),
+        datasets: [{ label: 'Simulations', data: result.histogram.buckets.map((b) => b.count), backgroundColor: PALETTE.accentSoft, borderColor: PALETTE.accent }],
+    });
+
+    renderLineChart('chart-mc-convergence', {
+        labels: result.convergence.map((c) => c.simulationsSoFar),
+        datasets: [
+            { label: 'Average simulated return (%)', data: result.convergence.map((c) => c.averageReturnSoFar * 100), borderColor: PALETTE.accent, backgroundColor: PALETTE.accentSoft },
+            { label: 'Theoretical EV (%)', data: result.convergence.map(() => result.roi.theoreticalEvPct), borderColor: PALETTE.text, borderDash: [6, 4], pointRadius: 0 },
+        ],
+    });
+}
+
+$('btn-run-montecarlo').addEventListener('click', async () => {
+    const rouletteType = state.settings.rouletteType;
+    const simulations = Number($('mc-simulations').value);
+    const spinsPerSimulation = Number($('mc-spins').value);
+    const betType = $('mc-bet-type').value;
+    const betSelection = betType === BET_TYPES.STRAIGHT ? $('mc-number').value : undefined;
+
+    $('btn-run-montecarlo').disabled = true;
+    setProgress('mc', 0, simulations);
+    const result = await runHeavyJob('monte-carlo-lab', 'monteCarlo', {
+        rouletteType, simulations, spinsPerSimulation, betType, betSelection,
+        betAmount: state.settings.betAmount, startingBankroll: state.settings.startingBankroll,
+    }, (done, total) => setProgress('mc', done, total, `Running simulation ${formatInt(done)} of ${formatInt(total)}…`));
+    $('btn-run-montecarlo').disabled = false;
+    setProgress('mc', 1, 1);
+    if (!result) return; // superseded by a newer run on this channel
+    renderMonteCarloResult(result);
+});
+
+$('btn-run-mc-compare').addEventListener('click', async () => {
+    const selected = [...$('mc-compare-bet-list').querySelectorAll('input[type="checkbox"]:checked')].map((el) => el.value);
+    if (selected.length === 0) return;
+
+    const rouletteType = state.settings.rouletteType;
+    const simulations = Number($('mc-simulations').value);
+    const spinsPerSimulation = Number($('mc-spins').value);
+    const baseParams = {
+        rouletteType, simulations, spinsPerSimulation,
+        betAmount: state.settings.betAmount, startingBankroll: state.settings.startingBankroll,
+    };
+
+    $('btn-run-mc-compare').disabled = true;
+    const results = [];
+    for (const betType of selected) {
+        const betSelection = betType === BET_TYPES.STRAIGHT ? '17' : undefined;
+        const label = BET_TYPE_LABELS[betType] + (betType === BET_TYPES.STRAIGHT ? ' (17)' : '');
+        // Sequential, not Promise.all: keeps each job well-defined as "the
+        // latest" on this channel, so a fresh click cancels a stale run
+        // cleanly instead of racing several in-flight worker jobs at once.
+        const result = await runHeavyJob('monte-carlo-compare', 'monteCarlo', { ...baseParams, betType, betSelection });
+        if (!result) { $('btn-run-mc-compare').disabled = false; return; } // superseded mid-loop
+        results.push({ label, ...result });
+    }
+    $('btn-run-mc-compare').disabled = false;
+
+    $('mc-compare-table-body').innerHTML = results.map((r) => `
+        <tr>
+            <td>${r.label}</td>
+            <td>${formatCurrency(r.summary.mean)}</td>
+            <td class="${r.profitLoss.median >= 0 ? 'positive' : 'negative'}">${formatCurrency(r.profitLoss.median)}</td>
+            <td class="${r.roi.overallPct >= 0 ? 'positive' : 'negative'}">${formatPct(r.roi.overallPct)}</td>
+            <td>${formatCurrency(r.summary.standardDeviation ?? 0)}</td>
+        </tr>
+    `).join('');
+    $('mc-compare-results').hidden = false;
+});
+
+// ---------------------------------------------------------------------------
+// Statistical Test Lab — Large Sample Generator tab
+// ---------------------------------------------------------------------------
+
+function renderLabSampleResult(result) {
+    $('lab-results').hidden = false;
+    const rouletteType = result.rouletteType;
+    const total = result.size;
+    const redPct = (result.colorCounts.red / total) * 100;
+    const blackPct = (result.colorCounts.black / total) * 100;
+    const greenPct = (result.colorCounts.green / total) * 100;
+    const theoreticalRed = getRedOrBlackProbability(rouletteType) * 100;
+    const theoreticalGreen = getGreenProbability(rouletteType) * 100;
+
+    $('lab-summary-cards').innerHTML = `
+        <div class="card"><div class="card__title">Sample size</div><div class="card__value">${formatInt(total)}</div></div>
+        <div class="card"><div class="card__title">Mean</div><div class="card__value">${formatNumber(result.mean)}</div></div>
+        <div class="card"><div class="card__title">Median</div><div class="card__value">${formatNumber(result.median)}</div></div>
+        <div class="card"><div class="card__title">Mode</div><div class="card__value" style="font-size:1rem">${result.modes.join(', ')}</div></div>
+        <div class="card"><div class="card__title text-red">Red</div><div class="card__value">${formatPct(redPct)}</div><div class="text-muted" style="font-size:0.78rem">Theoretical: ${formatPct(theoreticalRed)}</div></div>
+        <div class="card"><div class="card__title">Black</div><div class="card__value">${formatPct(blackPct)}</div><div class="text-muted" style="font-size:0.78rem">Theoretical: ${formatPct(theoreticalRed)}</div></div>
+        <div class="card"><div class="card__title text-green">Green</div><div class="card__value">${formatPct(greenPct)}</div><div class="text-muted" style="font-size:0.78rem">Theoretical: ${formatPct(theoreticalGreen)}</div></div>
+    `;
+
+    renderLineChart('chart-lab-convergence', {
+        labels: result.checkpoints.map((c) => formatInt(c.n)),
+        datasets: [
+            { label: 'Red % (observed)', data: result.checkpoints.map((c) => c.redPct), borderColor: PALETTE.red, pointRadius: 0 },
+            { label: 'Red % (theoretical)', data: result.checkpoints.map(() => theoreticalRed), borderColor: PALETTE.red, borderDash: [5, 4], pointRadius: 0 },
+            { label: 'Green % (observed)', data: result.checkpoints.map((c) => c.greenPct), borderColor: PALETTE.green, pointRadius: 0 },
+            { label: 'Green % (theoretical)', data: result.checkpoints.map(() => theoreticalGreen), borderColor: PALETTE.green, borderDash: [5, 4], pointRadius: 0 },
+        ],
+    });
+
+    const pockets = getPockets(rouletteType);
+    const singlePct = getSingleNumberProbability(rouletteType) * 100;
+    const numberRows = pockets.map((p) => {
+        const occurrences = result.numberCounts[p];
+        const observedPct = (occurrences / total) * 100;
+        return { result: p, occurrences, observedPct, expectedPct: singlePct, diff: observedPct - singlePct };
+    });
+
+    renderBarChart('chart-lab-numbers', {
+        labels: numberRows.map((r) => r.result),
+        datasets: [{ label: 'Difference from expected (pp)', data: numberRows.map((r) => r.diff), backgroundColor: PALETTE.accentSoft, borderColor: PALETTE.accent }],
+    });
+
+    const sortedByDiff = [...numberRows].sort((a, b) => Math.abs(b.diff) - Math.abs(a.diff)).slice(0, 15);
+    $('lab-numbers-table-body').innerHTML = sortedByDiff.map((r) => `
+        <tr>
+            <td>${r.result}</td>
+            <td>${r.occurrences}</td>
+            <td>${formatPct(r.observedPct)}</td>
+            <td>${formatPct(r.expectedPct)}</td>
+            <td class="${r.diff >= 0 ? 'positive' : 'negative'}">${formatSignedPct(r.diff)}</td>
+        </tr>
+    `).join('');
+}
+
+$('btn-generate-lab-sample').addEventListener('click', async () => {
+    const rouletteType = state.settings.rouletteType;
+    const size = Number($('lab-sample-size').value);
+
+    $('btn-generate-lab-sample').disabled = true;
+    setProgress('lab', 0, size);
+    const result = await runHeavyJob('stat-lab-sample', 'generateSample', { rouletteType, size }, (done, total) => setProgress('lab', done, total, `Generated ${formatInt(done)} of ${formatInt(total)}…`));
+    $('btn-generate-lab-sample').disabled = false;
+    setProgress('lab', 1, 1);
+    if (!result) return; // superseded by a newer generation request
+    renderLabSampleResult(result);
+});
+
+// ---------------------------------------------------------------------------
+// Statistical Test Lab — Pattern Detector Validation tab
+// ---------------------------------------------------------------------------
+
+$('btn-run-pattern-validation').addEventListener('click', async () => {
+    const datasetCount = Number($('pv-dataset-count').value);
+    const roundsPerDataset = Number($('pv-rounds-per-dataset').value);
+    const rouletteType = state.settings.rouletteType;
+
+    $('btn-run-pattern-validation').disabled = true;
+    setProgress('pv', 0, datasetCount);
+    const report = await runHeavyJob('stat-lab-pattern-validation', 'patternValidation', { datasetCount, roundsPerDataset, rouletteType }, (done, total) => setProgress('pv', done, total, `Analyzed ${done} of ${total} dataset(s)…`));
+    $('btn-run-pattern-validation').disabled = false;
+    setProgress('pv', 1, 1);
+    if (!report) return; // superseded by a newer run
+
+    $('pv-results').hidden = false;
+    $('pv-table-body').innerHTML = report.detectorTriggerRates.map((row) => `
+        <tr>
+            <td>${row.label}</td>
+            <td>${formatPct(row.anyDeviationRate * 100)}</td>
+            <td>${formatPct(row.moderateOrStrongerRate * 100)}</td>
+            <td>${formatPct(row.strongRate * 100)}</td>
+        </tr>
+    `).join('');
+    $('pv-interpretation').textContent = report.interpretation;
+    $('pv-multiple-testing-note').textContent = report.multipleTestingNote;
+});
+
+// ---------------------------------------------------------------------------
+// System Validation page
+// ---------------------------------------------------------------------------
+
+$('btn-run-validation').addEventListener('click', () => {
+    const results = runSystemValidation();
+    const passCount = results.filter((r) => r.status === 'PASS').length;
+    $('validation-summary').textContent = `${passCount} / ${results.length} checks passed.`;
+    $('validation-results').hidden = false;
+    $('validation-table-body').innerHTML = results.map((r) => `
+        <tr>
+            <td>${r.name}</td>
+            <td class="validation-status--${r.status.toLowerCase()}">${r.status}</td>
+            <td class="text-muted" style="font-size:0.82rem">${r.detail}</td>
+        </tr>
+    `).join('');
+});
+
+// ---------------------------------------------------------------------------
 // Init
 // ---------------------------------------------------------------------------
 
@@ -987,7 +1479,10 @@ function init() {
     populateStraightNumberSelect();
     populateSimBetTypeSelect();
     populateSimNumberSelect();
+    populateMonteCarloBetTypeSelect();
+    populateMonteCarloNumberSelect();
     buildMultiBetList();
+    buildMonteCarloCompareList();
     buildAnalysisWindowButtons();
 
     state.wheel = createRouletteWheel($('wheel-container'), state.settings.rouletteType);

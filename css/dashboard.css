@@ -131,3 +131,58 @@
     grid-template-columns: 1fr 1fr;
     gap: 16px;
 }
+
+.progress-bar {
+    background: var(--bg-input);
+    border: 1px solid var(--border);
+    border-radius: 999px;
+    height: 10px;
+    overflow: hidden;
+    margin: 10px 0;
+}
+
+.progress-bar__fill {
+    background: var(--gold);
+    height: 100%;
+    width: 0%;
+    transition: width 0.15s ease-out;
+}
+
+.progress-label {
+    font-size: 0.8rem;
+    color: var(--text-muted);
+}
+
+.validation-table td:nth-child(2) {
+    font-weight: 700;
+}
+
+.validation-status--pass {
+    color: var(--success);
+}
+
+.validation-status--fail {
+    color: var(--danger);
+}
+
+.caveat-box {
+    background: rgba(217, 164, 65, 0.1);
+    border: 1px solid var(--warning);
+    border-radius: var(--radius-sm);
+    padding: 10px 14px;
+    font-size: 0.85rem;
+    color: var(--text);
+}
+
+.report-actions {
+    display: flex;
+    gap: 10px;
+    flex-wrap: wrap;
+    margin-top: 12px;
+}
+
+.lab-not-stored-note {
+    font-size: 0.78rem;
+    color: var(--text-faint);
+    font-style: italic;
+}

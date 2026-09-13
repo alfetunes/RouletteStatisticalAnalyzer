@@ -2,7 +2,6 @@
   "permissions": {
     "allow": [
       "PowerShell(Test-Path *)"
-    ],
-    "defaultMode": "bypassPermissions"
+    ]
   }
 }

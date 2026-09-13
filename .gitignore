@@ -1,0 +1,36 @@
+# Dependencies. This project has zero runtime/build dependencies by design
+# (see README "Architecture") — node_modules only ever appears when a
+# development tool (e.g. Playwright, for a one-off manual browser QA pass)
+# is installed temporarily with `npm install --no-save` and is expected to
+# be removed again afterward. Never commit it.
+node_modules/
+package-lock.json
+npm-debug.log*
+
+# Secrets / environment files. None are used by this app (it is 100%
+# client-side with no API keys or server config), but this is a hard
+# default so one can never be committed by accident.
+.env
+.env.*
+!.env.example
+
+# Claude Code: settings.json (shared, committed) configures the project for
+# everyone; settings.local.json is a per-developer override and must never
+# be shared or committed.
+.claude/settings.local.json
+
+# Editor / IDE
+.vscode/
+.idea/
+*.swp
+*.swo
+
+# OS-generated files
+.DS_Store
+Thumbs.db
+ehthumbs.db
+Desktop.ini
+
+# Logs and ad-hoc local scratch files
+*.log
+*.tmp

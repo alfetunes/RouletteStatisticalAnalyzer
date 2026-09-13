@@ -157,10 +157,19 @@ export function createRouletteWheel(container, rouletteType) {
     let state = buildWheelSvg(rouletteType);
     let wheelRotation = 0;
     let ballRotation = 0;
+    let pendingCompletionTimer = null;
     container.innerHTML = '';
     container.appendChild(state.svg);
 
+    function cancelPendingCompletion() {
+        if (pendingCompletionTimer !== null) {
+            window.clearTimeout(pendingCompletionTimer);
+            pendingCompletionTimer = null;
+        }
+    }
+
     function setRouletteType(newType) {
+        cancelPendingCompletion();
         rouletteType = newType;
         wheelRotation = 0;
         ballRotation = 0;
@@ -179,6 +188,7 @@ export function createRouletteWheel(container, rouletteType) {
      * animation finishes (not before).
      */
     function spinToResult(result, onComplete) {
+        cancelPendingCompletion();
         const index = state.order.indexOf(String(result));
         if (index === -1) {
             onComplete?.();
@@ -209,10 +219,14 @@ export function createRouletteWheel(container, rouletteType) {
         state.ball.style.transition = `transform ${ballDurationMs}ms cubic-bezier(0.12, 0.65, 0.18, 1)`;
         state.ball.style.transform = `rotate(${ballRotation}deg)`;
 
-        window.setTimeout(() => onComplete?.(), Math.max(wheelDurationMs, ballDurationMs) + 60);
+        pendingCompletionTimer = window.setTimeout(() => {
+            pendingCompletionTimer = null;
+            onComplete?.();
+        }, Math.max(wheelDurationMs, ballDurationMs) + 60);
     }
 
     function destroy() {
+        cancelPendingCompletion();
         container.innerHTML = '';
     }
 

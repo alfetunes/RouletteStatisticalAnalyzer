@@ -6,7 +6,7 @@ import { describeResult, isValidResult } from './roulette.js';
 const CSV_COLUMNS = ['roundNumber', 'result', 'color', 'parity', 'range', 'dozen', 'column', 'timestamp'];
 const MAX_IMPORT_RECORDS = 1000;
 
-function escapeCsvField(value) {
+export function escapeCsvField(value) {
     const str = value === null || value === undefined ? '' : String(value);
     if (/[",\n]/.test(str)) {
         return `"${str.replace(/"/g, '""')}"`;
@@ -107,9 +107,9 @@ export function parseCsv(text, rouletteType) {
     return { records, errors, truncated };
 }
 
-/** Triggers a browser download of CSV text. Not testable in Node — DOM only. */
-export function triggerCsvDownload(csvText, filename = 'roulette-history.csv') {
-    const blob = new Blob([csvText], { type: 'text/csv;charset=utf-8;' });
+/** Triggers a browser download of arbitrary text content. Not testable in Node — DOM only. */
+export function triggerTextDownload(text, filename, mimeType) {
+    const blob = new Blob([text], { type: `${mimeType};charset=utf-8;` });
     const url = URL.createObjectURL(blob);
     const link = document.createElement('a');
     link.href = url;
@@ -118,6 +118,11 @@ export function triggerCsvDownload(csvText, filename = 'roulette-history.csv') {
     link.click();
     document.body.removeChild(link);
     URL.revokeObjectURL(url);
+}
+
+/** Triggers a browser download of CSV text. Not testable in Node — DOM only. */
+export function triggerCsvDownload(csvText, filename = 'roulette-history.csv') {
+    triggerTextDownload(csvText, filename, 'text/csv');
 }
 
 /** Reads a File/Blob as text via FileReader, wrapped in a Promise. */

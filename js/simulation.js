@@ -6,6 +6,7 @@
 import { generateRandomSequence } from './random.js';
 import { getColor, getParity, getRange, getDozen, getColumn } from './roulette.js';
 import { BET_TYPES, getBetPayout } from './probability.js';
+import { calculateMaxDrawdown } from './statistics.js';
 
 /** Shared bet-resolution logic — used by both simulations and real spins (spec §7). */
 export function evaluateBet(result, betType, betSelection) {
@@ -89,8 +90,6 @@ export function runSimulation({
     let currentLossStreak = 0;
     let longestWinStreak = 0;
     let longestLossStreak = 0;
-    let peakBankroll = startingBankroll;
-    let maxDrawdown = 0;
 
     const bankrollOverTime = [startingBankroll];
     const roundOutcomes = [];
@@ -119,14 +118,13 @@ export function runSimulation({
             longestLossStreak = Math.max(longestLossStreak, currentLossStreak);
         }
 
-        peakBankroll = Math.max(peakBankroll, bankroll);
-        maxDrawdown = Math.max(maxDrawdown, peakBankroll - bankroll);
         bankrollOverTime.push(bankroll);
         roundOutcomes.push({ roundNumber: i + 1, result, won, bankrollAfter: bankroll });
     }
 
     const playedRounds = roundOutcomes.length;
     const profitLoss = bankroll - startingBankroll;
+    const maxDrawdown = calculateMaxDrawdown(bankrollOverTime);
 
     return {
         id: generateSimulationId(),
