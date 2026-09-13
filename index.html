@@ -1,0 +1,470 @@
+<!doctype html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>Roulette Statistical Analyzer</title>
+    <meta name="description" content="A client-side roulette simulation, probability, and statistical analysis laboratory. Not a prediction tool." />
+    <link rel="stylesheet" href="css/style.css" />
+    <link rel="stylesheet" href="css/roulette.css" />
+    <link rel="stylesheet" href="css/dashboard.css" />
+    <link rel="stylesheet" href="css/responsive.css" />
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/Chart.js/4.5.1/chart.umd.min.js" defer></script>
+    <script>
+        // Safety net: browsers block ES module imports on the file:// protocol
+        // (CORS), so double-clicking index.html silently loads no JavaScript
+        // at all — nothing renders, no button does anything, no error dialog.
+        // app.js sets window.__ROULETTE_APP_READY__ once it finishes booting;
+        // if that never happens, tell the user why instead of staying silent.
+        window.addEventListener('DOMContentLoaded', function () {
+            setTimeout(function () {
+                if (window.__ROULETTE_APP_READY__) return;
+                var isFileProtocol = window.location.protocol === 'file:';
+                var banner = document.createElement('div');
+                banner.setAttribute('role', 'alert');
+                banner.style.cssText = 'position:fixed;top:0;left:0;right:0;z-index:9999;' +
+                    'background:#7a1f1f;color:#fff;padding:14px 20px;font:14px/1.5 -apple-system,' +
+                    'BlinkMacSystemFont,"Segoe UI",Roboto,Helvetica,Arial,sans-serif;text-align:center;' +
+                    'box-shadow:0 2px 12px rgba(0,0,0,0.4)';
+                banner.textContent = isFileProtocol
+                    ? 'This page did not load its scripts because it was opened directly as a file (file://). Browsers block that for module-based apps. Serve this folder with a local web server instead — e.g. run "npx serve ." (or "python -m http.server") in this folder, then open the http://localhost address it prints. See README.md for details.'
+                    : 'This page failed to load its JavaScript. Check the browser console for errors (a Chart.js CDN failure or an ad blocker are common causes).';
+                document.body.prepend(banner);
+            }, 2500);
+        });
+    </script>
+</head>
+<body>
+    <a class="skip-link" href="#main-content">Skip to main content</a>
+
+    <div class="app-shell">
+        <header class="app-header">
+            <div class="app-header__brand">
+                <span class="app-header__brand-mark" aria-hidden="true">🎰</span>
+                <span>Roulette Statistical Analyzer</span>
+            </div>
+            <nav class="app-nav" aria-label="Main sections">
+                <button class="app-nav__button" data-page="roulette" aria-current="page">🎰 Roulette</button>
+                <button class="app-nav__button" data-page="history">📜 History</button>
+                <button class="app-nav__button" data-page="analyzer">📊 Analyzer</button>
+                <button class="app-nav__button" data-page="simulation">🧪 Simulation</button>
+            </nav>
+        </header>
+
+        <main class="app-main" id="main-content">
+            <!-- ============ ROULETTE PAGE ============ -->
+            <section class="page" id="page-roulette" data-page-panel="roulette">
+                <div class="card">
+                    <div class="section-title">
+                        <h2>Settings</h2>
+                        <span class="text-muted" style="font-size:0.8rem">These are the only configurable options.</span>
+                    </div>
+                    <div class="form-grid">
+                        <div class="form-row">
+                            <label for="setting-roulette-type">Roulette type</label>
+                            <select id="setting-roulette-type">
+                                <option value="european">European (1 zero — 37 pockets)</option>
+                                <option value="american">American (0 and 00 — 38 pockets)</option>
+                            </select>
+                        </div>
+                        <div class="form-row">
+                            <label for="setting-bankroll">Starting bankroll</label>
+                            <input type="number" id="setting-bankroll" min="1" step="1" value="1000" />
+                        </div>
+                        <div class="form-row">
+                            <label for="setting-bet-amount">Bet amount per round</label>
+                            <input type="number" id="setting-bet-amount" min="0.01" step="1" value="10" />
+                        </div>
+                        <div class="form-row">
+                            <button class="btn btn--secondary" id="btn-apply-settings" type="button">Apply</button>
+                        </div>
+                        <div class="form-row">
+                            <button class="btn btn--ghost" id="btn-reset-bankroll" type="button">Reset bankroll</button>
+                        </div>
+                    </div>
+                    <p class="disclaimer" id="settings-message" role="status"></p>
+                </div>
+
+                <div class="card-grid">
+                    <div class="card">
+                        <div class="card__title">Bankroll</div>
+                        <div class="card__value" id="stat-bankroll">R$ 0.00</div>
+                    </div>
+                    <div class="card">
+                        <div class="card__title">Bet</div>
+                        <div class="card__value" id="stat-bet-amount">R$ 0.00</div>
+                    </div>
+                    <div class="card">
+                        <div class="card__title">Rounds</div>
+                        <div class="card__value" id="stat-rounds">0</div>
+                    </div>
+                    <div class="card">
+                        <div class="card__title">Last result</div>
+                        <div class="card__value" id="stat-last-result">—</div>
+                    </div>
+                </div>
+
+                <div class="roulette-page">
+                    <div class="card roulette-wheel-card">
+                        <div class="roulette-wheel" id="wheel-container" aria-hidden="true"></div>
+                        <div class="result-panel">
+                            <div class="result-panel__round" id="result-round">Round #0</div>
+                            <div id="result-display" aria-live="polite">
+                                <div class="result-panel__placeholder">Spin the wheel to generate a result</div>
+                            </div>
+                        </div>
+                    </div>
+
+                    <div class="card bet-panel">
+                        <div class="section-title"><h2>Place a bet (optional) &amp; spin</h2></div>
+                        <p class="text-muted" style="font-size:0.85rem">You can spin without betting, or choose a bet type below. Bets are resolved using standard payouts against your bankroll.</p>
+                        <div class="bet-type-grid" id="bet-type-grid" role="group" aria-label="Bet type"></div>
+                        <div class="form-row" id="straight-number-row" hidden>
+                            <label for="straight-number">Number (0-36<span id="straight-00-hint">, 00</span>)</label>
+                            <select id="straight-number"></select>
+                        </div>
+                        <div class="spin-controls">
+                            <button class="btn" id="btn-spin" type="button">Spin</button>
+                            <button class="btn btn--ghost" id="btn-clear-bet" type="button">Clear bet</button>
+                        </div>
+                        <p class="disclaimer" id="bet-message" role="status"></p>
+
+                        <div class="section-title"><h3>Recent results</h3></div>
+                        <div class="recent-results" id="recent-results"></div>
+                    </div>
+                </div>
+            </section>
+
+            <!-- ============ HISTORY PAGE ============ -->
+            <section class="page" id="page-history" data-page-panel="history" hidden>
+                <div class="card">
+                    <div class="section-title">
+                        <h2>Round History</h2>
+                        <span class="text-muted" id="history-count-label" style="font-size:0.85rem">0 rounds recorded (max 1,000)</span>
+                    </div>
+                    <div class="toolbar">
+                        <input type="text" id="history-search" placeholder="Search number…" />
+                        <select id="filter-color">
+                            <option value="">Any color</option>
+                            <option value="red">Red</option>
+                            <option value="black">Black</option>
+                            <option value="green">Green</option>
+                        </select>
+                        <select id="filter-parity">
+                            <option value="">Any parity</option>
+                            <option value="even">Even</option>
+                            <option value="odd">Odd</option>
+                        </select>
+                        <select id="filter-range">
+                            <option value="">Any range</option>
+                            <option value="low">1-18</option>
+                            <option value="high">19-36</option>
+                        </select>
+                        <select id="filter-dozen">
+                            <option value="">Any dozen</option>
+                            <option value="1">1st dozen</option>
+                            <option value="2">2nd dozen</option>
+                            <option value="3">3rd dozen</option>
+                        </select>
+                        <select id="filter-column">
+                            <option value="">Any column</option>
+                            <option value="1">1st column</option>
+                            <option value="2">2nd column</option>
+                            <option value="3">3rd column</option>
+                        </select>
+                        <button class="btn btn--ghost" id="btn-reset-filters" type="button">Reset filters</button>
+                    </div>
+                    <div class="toolbar" style="margin-top:10px">
+                        <button class="btn btn--secondary" id="btn-export-csv" type="button">Export CSV</button>
+                        <label class="btn btn--secondary" for="import-csv-input" style="cursor:pointer">Import CSV</label>
+                        <input type="file" id="import-csv-input" accept=".csv,text/csv" class="visually-hidden" />
+                        <button class="btn btn--ghost" id="btn-clear-history" type="button">Clear history</button>
+                    </div>
+                    <p class="disclaimer" id="history-message" role="status"></p>
+
+                    <div class="table-wrap">
+                        <table id="history-table">
+                            <thead>
+                                <tr>
+                                    <th data-sort="round">Round</th>
+                                    <th data-sort="number">Number</th>
+                                    <th data-sort="color">Color</th>
+                                    <th data-sort="parity">Parity</th>
+                                    <th data-sort="range">Range</th>
+                                    <th data-sort="dozen">Dozen</th>
+                                    <th data-sort="column">Column</th>
+                                    <th data-sort="time">Time</th>
+                                </tr>
+                            </thead>
+                            <tbody id="history-table-body"></tbody>
+                        </table>
+                    </div>
+                    <div class="pagination" id="history-pagination"></div>
+                </div>
+            </section>
+
+            <!-- ============ ANALYZER PAGE ============ -->
+            <section class="page" id="page-analyzer" data-page-panel="analyzer" hidden>
+                <div class="card">
+                    <div class="app-nav" role="tablist" aria-label="Analyzer mode">
+                        <button class="app-nav__button" data-analyzer-tab="history" aria-current="page">History Analysis</button>
+                        <button class="app-nav__button" data-analyzer-tab="explorer">Pattern Explorer</button>
+                        <button class="app-nav__button" data-analyzer-tab="compare">Sample Comparison</button>
+                    </div>
+                </div>
+
+                <!-- History Analysis tab -->
+                <div id="analyzer-tab-history" class="page">
+                    <div class="card">
+                        <div class="section-title"><h2>Analysis Window</h2></div>
+                        <div class="window-select" id="analysis-window-select"></div>
+                        <p class="sample-size-tag" id="sample-size-label"></p>
+                    </div>
+
+                    <div class="card">
+                        <div class="section-title"><h2>Next Round — Mathematical Probability</h2></div>
+                        <p class="text-muted">This section shows the theoretical probability of each outcome on the <strong>next independent spin</strong>. It never changes based on history.</p>
+                        <div class="two-col">
+                            <div>
+                                <h3>Colors</h3>
+                                <div id="probability-colors" class="card-grid"></div>
+                            </div>
+                            <div>
+                                <h3>Even-money &amp; groups</h3>
+                                <div id="probability-groups" class="card-grid"></div>
+                            </div>
+                        </div>
+                        <h3>Individual numbers</h3>
+                        <div class="probability-grid" id="probability-numbers"></div>
+                        <div class="explainer" id="probability-explainer"></div>
+                    </div>
+
+                    <div class="card">
+                        <div class="section-title"><h2>Central Tendency</h2></div>
+                        <div class="card-grid" id="central-tendency-cards"></div>
+                    </div>
+
+                    <div class="card">
+                        <div class="section-title"><h2>Number Frequency &amp; Gaps</h2></div>
+                        <div class="table-wrap">
+                            <table id="frequency-table">
+                                <thead>
+                                    <tr>
+                                        <th>Number</th>
+                                        <th>Occurrences</th>
+                                        <th>Observed %</th>
+                                        <th>Expected %</th>
+                                        <th>Difference</th>
+                                        <th>Rounds since last</th>
+                                        <th>Avg gap</th>
+                                    </tr>
+                                </thead>
+                                <tbody id="frequency-table-body"></tbody>
+                            </table>
+                        </div>
+                        <div class="explainer">Rounds since last occurrence describes the sample. A long gap does not increase the mathematical probability of a number appearing on the next spin.</div>
+                    </div>
+
+                    <div class="chart-grid">
+                        <div class="card">
+                            <h3>Frequency by number</h3>
+                            <div class="chart-box"><canvas id="chart-number-frequency"></canvas></div>
+                        </div>
+                        <div class="card">
+                            <h3>Red vs black vs green</h3>
+                            <div class="chart-box"><canvas id="chart-color"></canvas></div>
+                        </div>
+                        <div class="card">
+                            <h3>Even vs odd</h3>
+                            <div class="chart-box"><canvas id="chart-parity"></canvas></div>
+                        </div>
+                        <div class="card">
+                            <h3>Low vs high</h3>
+                            <div class="chart-box"><canvas id="chart-range"></canvas></div>
+                        </div>
+                        <div class="card">
+                            <h3>Dozens</h3>
+                            <div class="chart-box"><canvas id="chart-dozens"></canvas></div>
+                        </div>
+                        <div class="card">
+                            <h3>Columns</h3>
+                            <div class="chart-box"><canvas id="chart-columns"></canvas></div>
+                        </div>
+                        <div class="card">
+                            <h3>Rolling mean (25 rounds)</h3>
+                            <div class="chart-box"><canvas id="chart-rolling-mean"></canvas></div>
+                        </div>
+                        <div class="card">
+                            <h3>Frequency over time (rolling red %)</h3>
+                            <div class="chart-box"><canvas id="chart-frequency-time"></canvas></div>
+                        </div>
+                    </div>
+
+                    <div class="card">
+                        <div class="section-title"><h2>Sequence &amp; Repetition Analysis</h2></div>
+                        <div class="card-grid" id="sequence-cards"></div>
+                        <div id="repetition-summary" class="explainer" style="margin-top:10px"></div>
+                    </div>
+
+                    <div class="card">
+                        <div class="section-title"><h2>Statistical Tests</h2></div>
+                        <div id="statistical-tests"></div>
+                    </div>
+
+                    <div class="card">
+                        <div class="section-title"><h2>🔍 Pattern Detective</h2></div>
+                        <div class="table-wrap">
+                            <table id="pattern-table">
+                                <thead>
+                                    <tr>
+                                        <th>Observation</th>
+                                        <th>Classification</th>
+                                    </tr>
+                                </thead>
+                                <tbody id="pattern-table-body"></tbody>
+                            </table>
+                        </div>
+                    </div>
+
+                    <div class="card">
+                        <div class="section-title"><h2>Automatic Insights</h2></div>
+                        <ul class="insight-list" id="insight-list"></ul>
+                    </div>
+
+                    <div class="card summary-card">
+                        <div class="section-title"><h2>Analysis Summary</h2></div>
+                        <p id="analysis-summary"></p>
+                    </div>
+                </div>
+
+                <!-- Pattern Explorer tab -->
+                <div id="analyzer-tab-explorer" class="page" hidden>
+                    <div class="card">
+                        <div class="section-title"><h2>Pattern Explorer</h2></div>
+                        <p class="text-muted">Generate an independent random sample and explore its statistics. Each sample is a new draw — samples are expected to differ from each other.</p>
+                        <div class="toolbar">
+                            <select id="explorer-size">
+                                <option value="100">100 rounds</option>
+                                <option value="200">200 rounds</option>
+                                <option value="500">500 rounds</option>
+                                <option value="1000">1000 rounds</option>
+                            </select>
+                            <button class="btn" id="btn-generate-sample" type="button">Generate New Sample</button>
+                        </div>
+                    </div>
+                    <div class="card" id="explorer-results" hidden>
+                        <div class="card-grid" id="explorer-summary-cards"></div>
+                        <ul class="insight-list" id="explorer-insight-list" style="margin-top:14px"></ul>
+                    </div>
+                </div>
+
+                <!-- Sample Comparison tab -->
+                <div id="analyzer-tab-compare" class="page" hidden>
+                    <div class="card">
+                        <div class="section-title"><h2>Sample A vs Sample B</h2></div>
+                        <p class="text-muted">This demonstrates that two independent random samples can look noticeably different, purely due to statistical variation.</p>
+                        <div class="toolbar">
+                            <select id="compare-size">
+                                <option value="100">100 rounds</option>
+                                <option value="200">200 rounds</option>
+                                <option value="500">500 rounds</option>
+                                <option value="1000">1000 rounds</option>
+                            </select>
+                            <button class="btn" id="btn-generate-compare" type="button">Generate Sample A &amp; B</button>
+                        </div>
+                    </div>
+                    <div class="card" id="compare-results" hidden>
+                        <div class="table-wrap">
+                            <table class="compare-table" id="compare-table">
+                                <thead>
+                                    <tr><th>Metric</th><th>Sample A</th><th>Sample B</th></tr>
+                                </thead>
+                                <tbody id="compare-table-body"></tbody>
+                            </table>
+                        </div>
+                    </div>
+                </div>
+            </section>
+
+            <!-- ============ SIMULATION PAGE ============ -->
+            <section class="page" id="page-simulation" data-page-panel="simulation" hidden>
+                <div class="card">
+                    <div class="app-nav" role="tablist" aria-label="Simulation mode">
+                        <button class="app-nav__button" data-sim-tab="single" aria-current="page">Simulation Lab</button>
+                        <button class="app-nav__button" data-sim-tab="multi">Multi-Bet Comparison</button>
+                    </div>
+                </div>
+
+                <div id="sim-tab-single" class="page">
+                    <div class="card">
+                        <div class="section-title"><h2>Run a Simulation</h2></div>
+                        <p class="text-muted">Uses the bankroll and bet amount from Settings. Each run is an independent new random sequence — it does not predict real results.</p>
+                        <div class="simulation-form">
+                            <div class="form-grid">
+                                <div class="form-row">
+                                    <label for="sim-rounds">Rounds</label>
+                                    <select id="sim-rounds">
+                                        <option value="100">100</option>
+                                        <option value="200">200</option>
+                                        <option value="500">500</option>
+                                        <option value="1000">1000</option>
+                                    </select>
+                                </div>
+                                <div class="form-row">
+                                    <label for="sim-bet-type">Bet type</label>
+                                    <select id="sim-bet-type"></select>
+                                </div>
+                                <div class="form-row" id="sim-number-row" hidden>
+                                    <label for="sim-number">Number</label>
+                                    <select id="sim-number"></select>
+                                </div>
+                                <div class="form-row">
+                                    <button class="btn" id="btn-run-simulation" type="button">Run Simulation</button>
+                                </div>
+                            </div>
+                        </div>
+                    </div>
+                    <div class="card" id="sim-results" hidden>
+                        <div class="card-grid" id="sim-summary-cards"></div>
+                        <div class="chart-box" style="margin-top:16px"><canvas id="chart-sim-bankroll"></canvas></div>
+                    </div>
+                </div>
+
+                <div id="sim-tab-multi" class="page" hidden>
+                    <div class="card">
+                        <div class="section-title"><h2>Compare Several Bets</h2></div>
+                        <p class="text-muted">Runs one independent simulation per selected bet, all with the same rounds/bankroll/bet amount, for statistical comparison only.</p>
+                        <div class="form-row">
+                            <label for="multi-rounds">Rounds</label>
+                            <select id="multi-rounds">
+                                <option value="100">100</option>
+                                <option value="200">200</option>
+                                <option value="500">500</option>
+                                <option value="1000">1000</option>
+                            </select>
+                        </div>
+                        <div class="multi-bet-list" id="multi-bet-list"></div>
+                        <button class="btn" id="btn-run-multi" type="button" style="margin-top:10px">Run Comparison</button>
+                    </div>
+                    <div class="card" id="multi-results" hidden>
+                        <div class="table-wrap">
+                            <table class="compare-table" id="multi-table">
+                                <thead>
+                                    <tr><th>Bet</th><th>Wins</th><th>Win Rate</th><th>ROI</th><th>Profit/Loss</th></tr>
+                                </thead>
+                                <tbody id="multi-table-body"></tbody>
+                            </table>
+                        </div>
+                    </div>
+                </div>
+            </section>
+        </main>
+
+        <footer class="app-footer">
+            Roulette Statistical Analyzer — a statistical analysis and simulation tool, not a gambling recommendation or prediction engine. All data stays in your browser.
+        </footer>
+    </div>
+
+    <script type="module" src="js/app.js"></script>
+</body>
+</html>

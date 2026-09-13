@@ -1,0 +1,48 @@
+@media (max-width: 900px) {
+    .roulette-page {
+        grid-template-columns: 1fr;
+    }
+
+    .two-col,
+    .sample-columns {
+        grid-template-columns: 1fr;
+    }
+}
+
+@media (max-width: 640px) {
+    .app-header {
+        flex-direction: column;
+        align-items: stretch;
+        gap: 10px;
+        padding: 12px 14px;
+    }
+
+    .app-nav {
+        justify-content: center;
+    }
+
+    .app-nav__button {
+        padding: 8px 10px;
+        font-size: 0.82rem;
+    }
+
+    .app-main {
+        padding: 14px;
+    }
+
+    .roulette-wheel__svg {
+        max-width: 220px;
+    }
+
+    .result-panel__number {
+        font-size: 2.4rem;
+    }
+
+    .card-grid {
+        grid-template-columns: repeat(2, 1fr);
+    }
+
+    .chart-box {
+        height: 220px;
+    }
+}

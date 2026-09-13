@@ -1,0 +1,133 @@
+.toolbar {
+    display: flex;
+    align-items: center;
+    gap: 12px;
+    flex-wrap: wrap;
+}
+
+.window-select {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 6px;
+}
+
+.window-select button {
+    background: var(--bg-elevated);
+    border: 1px solid var(--border-strong);
+    color: var(--text-muted);
+    padding: 6px 12px;
+    border-radius: 999px;
+    font-size: 0.82rem;
+    cursor: pointer;
+}
+
+.window-select button[aria-pressed='true'] {
+    background: var(--gold);
+    color: #1a1509;
+    border-color: var(--gold);
+    font-weight: 700;
+}
+
+.sample-size-tag {
+    font-size: 0.8rem;
+    color: var(--text-muted);
+}
+
+.stat-pair {
+    display: flex;
+    justify-content: space-between;
+    gap: 10px;
+    padding: 6px 0;
+    border-bottom: 1px solid var(--border);
+    font-size: 0.9rem;
+}
+
+.stat-pair:last-child {
+    border-bottom: none;
+}
+
+.chart-grid {
+    display: grid;
+    grid-template-columns: repeat(auto-fit, minmax(320px, 1fr));
+    gap: 16px;
+}
+
+.classification-row td:first-child {
+    font-weight: 600;
+}
+
+.two-col {
+    display: grid;
+    grid-template-columns: 1fr 1fr;
+    gap: 16px;
+}
+
+.probability-grid {
+    display: grid;
+    grid-template-columns: repeat(auto-fill, minmax(64px, 1fr));
+    gap: 6px;
+}
+
+.probability-grid__cell {
+    background: var(--bg-elevated);
+    border: 1px solid var(--border);
+    border-radius: var(--radius-sm);
+    padding: 6px 4px;
+    text-align: center;
+    font-size: 0.72rem;
+}
+
+.probability-grid__cell strong {
+    display: block;
+    font-size: 0.85rem;
+}
+
+.explainer {
+    background: var(--bg-elevated);
+    border-left: 3px solid var(--blue);
+    border-radius: var(--radius-sm);
+    padding: 12px 14px;
+    font-size: 0.87rem;
+    color: var(--text-muted);
+}
+
+.summary-card {
+    background: linear-gradient(160deg, rgba(212, 175, 55, 0.08), transparent);
+    border: 1px solid var(--gold-soft);
+}
+
+.summary-card p {
+    color: var(--text);
+}
+
+.compare-table td.positive {
+    color: var(--success);
+}
+
+.compare-table td.negative {
+    color: var(--danger);
+}
+
+.simulation-form {
+    display: flex;
+    flex-direction: column;
+    gap: 14px;
+}
+
+.multi-bet-list {
+    display: flex;
+    flex-direction: column;
+    gap: 8px;
+}
+
+.multi-bet-row {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+}
+
+.sample-columns {
+    display: grid;
+    grid-template-columns: 1fr 1fr;
+    gap: 16px;
+}
